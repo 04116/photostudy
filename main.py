@@ -3,85 +3,91 @@ from typing import List, Dict, Tuple
 
 
 class Person:
-    def __init__(self, name: str, subjects: List[str], grade_level: str, style: str):
+    def __init__(self, name: str, attributes: Dict[str, str]):
         self.name = name
-        self.subjects = subjects
-        self.grade_level = grade_level
-        self.style = style
+        self.attributes = attributes
 
 
 def create_tables(conn, teachers: List[Person], students: List[Person]):
-    # Create teachers table
+    # Create entities table
     conn.execute(
         """
-        CREATE TABLE teachers (
+        CREATE TABLE entities (
+            id INTEGER PRIMARY KEY,
             name VARCHAR,
-            subjects VARCHAR,
-            grade_level VARCHAR,
-            style VARCHAR
+            type VARCHAR
+        )
+    """
+    )
+
+    # Create attributes table
+    conn.execute(
+        """
+        CREATE TABLE attributes (
+            entity_id INTEGER,
+            attribute VARCHAR,
+            value VARCHAR,
+            FOREIGN KEY (entity_id) REFERENCES entities(id)
         )
     """
     )
 
     # Insert teachers data
-    for teacher in teachers:
+    for i, teacher in enumerate(teachers, start=1):
         conn.execute(
-            """
-            INSERT INTO teachers VALUES (?, ?, ?, ?)
-        """,
-            (
-                teacher.name,
-                ",".join(teacher.subjects),
-                teacher.grade_level,
-                teacher.style,
-            ),
+            "INSERT INTO entities VALUES (?, ?, ?)", (i, teacher.name, "teacher")
         )
-
-    # Create students table
-    conn.execute(
-        """
-        CREATE TABLE students (
-            name VARCHAR,
-            subjects VARCHAR,
-            grade_level VARCHAR,
-            style VARCHAR
-        )
-    """
-    )
+        for attr, value in teacher.attributes.items():
+            conn.execute("INSERT INTO attributes VALUES (?, ?, ?)", (i, attr, value))
 
     # Insert students data
-    for student in students:
+    for i, student in enumerate(students, start=len(teachers) + 1):
         conn.execute(
-            """
-            INSERT INTO students VALUES (?, ?, ?, ?)
-        """,
-            (
-                student.name,
-                ",".join(student.subjects),
-                student.grade_level,
-                student.style,
-            ),
+            "INSERT INTO entities VALUES (?, ?, ?)", (i, student.name, "student")
         )
-
-
-def calculate_subject_overlap(x: str, y: str) -> int:
-    return len(set(x.split(",")) & set(y.split(",")))
+        for attr, value in student.attributes.items():
+            conn.execute("INSERT INTO attributes VALUES (?, ?, ?)", (i, attr, value))
 
 
 def calculate_compatibility(conn):
-    conn.create_function("subject_overlap", calculate_subject_overlap, [str, str], int)
+    conn.create_function(
+        "subject_overlap",
+        lambda x, y: len(set(x.split(",")) & set(y.split(","))),
+        [str, str],
+        int,
+    )
 
     conn.execute(
         """
         CREATE TABLE compatibility AS
+        WITH teacher_attrs AS (
+            SELECT e.id, e.name,
+                   MAX(CASE WHEN a.attribute = 'subjects' THEN a.value END) AS subjects,
+                   MAX(CASE WHEN a.attribute = 'grade_level' THEN a.value END) AS grade_level,
+                   MAX(CASE WHEN a.attribute = 'style' THEN a.value END) AS style
+            FROM entities e
+            JOIN attributes a ON e.id = a.entity_id
+            WHERE e.type = 'teacher'
+            GROUP BY e.id, e.name
+        ),
+        student_attrs AS (
+            SELECT e.id, e.name,
+                   MAX(CASE WHEN a.attribute = 'subjects' THEN a.value END) AS subjects,
+                   MAX(CASE WHEN a.attribute = 'grade_level' THEN a.value END) AS grade_level,
+                   MAX(CASE WHEN a.attribute = 'style' THEN a.value END) AS style
+            FROM entities e
+            JOIN attributes a ON e.id = a.entity_id
+            WHERE e.type = 'student'
+            GROUP BY e.id, e.name
+        )
         SELECT
             t.name AS teacher_name,
             s.name AS student_name,
             (CASE WHEN t.grade_level = s.grade_level THEN 1 ELSE 0 END +
              CASE WHEN t.style = s.style THEN 1 ELSE 0 END +
              subject_overlap(t.subjects, s.subjects)) AS compatibility_score
-        FROM teachers t
-        CROSS JOIN students s
+        FROM teacher_attrs t
+        CROSS JOIN student_attrs s
     """
     )
 
@@ -107,15 +113,33 @@ def find_best_matches(conn) -> Dict[str, Tuple[str, float]]:
 
 # Example usage
 teachers = [
-    Person("Ms. Johnson", ["Math", "Science"], "Elementary", "Visual"),
-    Person("Mr. Smith", ["English", "History"], "Middle", "Auditory"),
-    Person("Mrs. Davis", ["Math", "Art"], "Elementary", "Kinesthetic"),
+    Person(
+        "Ms. Johnson",
+        {"subjects": "Math,Science", "grade_level": "Elementary", "style": "Visual"},
+    ),
+    Person(
+        "Mr. Smith",
+        {"subjects": "English,History", "grade_level": "Middle", "style": "Auditory"},
+    ),
+    Person(
+        "Mrs. Davis",
+        {"subjects": "Math,Art", "grade_level": "Elementary", "style": "Kinesthetic"},
+    ),
 ]
 
 students = [
-    Person("Alice", ["Math", "Science"], "Elementary", "Visual"),
-    Person("Bob", ["English", "History"], "Middle", "Auditory"),
-    Person("Charlie", ["Math", "Art"], "Elementary", "Visual"),
+    Person(
+        "Alice",
+        {"subjects": "Math,Science", "grade_level": "Elementary", "style": "Visual"},
+    ),
+    Person(
+        "Bob",
+        {"subjects": "English,History", "grade_level": "Middle", "style": "Auditory"},
+    ),
+    Person(
+        "Charlie",
+        {"subjects": "Math,Art", "grade_level": "Elementary", "style": "Visual"},
+    ),
 ]
 
 # Create a connection to an in-memory DuckDB database
@@ -130,7 +154,6 @@ calculate_compatibility(conn)
 # Find best matches
 matches = find_best_matches(conn)
 
-print("\n\n")
 for student, (teacher, score) in matches.items():
     print(f"{student} is matched with {teacher} (Score: {score})")
 
